@@ -19,7 +19,7 @@ metadata {
 		capability "ThermostatOperatingState"
 		capability "ThermostatMode"
 		
-		command "setWaterHeaterMode", [[name:"Mode*","type":"ENUM","description":"Mode","constraints":["Heat Pump", "Energy Saver", "High Demand", "Normal", "Off"]]]
+		command "setWaterHeaterMode", [[name:"Mode*","type":"ENUM","description":"Mode","constraints":["Heat Pump", "Energy Saver", "High Demand", "Normal", "Vacation", "Off"]]]
 		
 		attribute "waterHeaterMode", "ENUM"
     }
@@ -63,7 +63,7 @@ def mqttConnectUntilSuccessful() {
 }
 
 def initialize() {	
-	if (device.getDataValue("enabledDisabled" == "true"))
+	if (device.getDataValue("enabledDisabled") == "true")
 		sendEvent(name: "supportedThermostatModes", value: ["off", "heat"])
 	else if (device.getDataValue("tempOnly") == "true")
 		sendEvent(name: "supportedThermostatModes", value: [])
@@ -109,35 +109,68 @@ def mqttClientStatus(String message) {
 }
 
 def parse(String message) {
-	def topic = interfaces.mqtt.parseMessage(message)
+  try {
+    def topic = interfaces.mqtt.parseMessage(message)
     def payload =  new JsonSlurper().parseText(topic.payload) 
-
-	if ("rheem:" + payload?.device_name + ":" + payload?.serial_number == device.deviceNetworkId) {
-		parent.logDebug "MQTT Message was: ${topic.payload}"
-		if (payload."@SETPOINT" != null) {
-			device.sendEvent(name: "heatingSetpoint", value: payload."@SETPOINT", unit: "F")
-			device.sendEvent(name: "thermostatSetpoint", value: payload."@SETPOINT", unit: "F")
-		}
-		if (device.getDataValue("enabledDisabled") == "true" && payload."@ACTIVE" != null) {
-			def mode = payload."@ACTIVE" == true ? "heat" : "off"
-			device.sendEvent(name: "thermostatMode", value: mode)
-		}
-		if (payload."@MODE" != null) {
-			if (!payload."@MODE".toString().isInteger()) {
-				device.sendEvent(name: "thermostatMode", value: parent.translateThermostatMode(payload."@MODE".status))
-				device.sendEvent(name: "waterHeaterMode", value: payload."@MODE".status)
-			}
-			else {
-				def mode = translateEnumToWaterHeaderMode(payload."@MODE")
-				device.sendEvent(name: "thermostatMode", value: parent.translateThermostatMode(mode))
-				device.sendEvent(name: "waterHeaterMode", value: mode)
-			}
-		}
-
-		if (payload."@RUNNING" != null) {
-			device.sendEvent(name: "thermostatOperatingState", value: payload."@RUNNING" == "Running" ? "heating" : "idle")	
-		}
-	}
+    parent.logDebug "MQTT Message was: ${payload}"
+    if ("rheem:" + payload?.device_name + ":" + payload?.serial_number != device.deviceNetworkId) {
+      parent.logDebug "[ERROR] Wrong device"
+      return
+    }
+    if (payload."@SETPOINT" != null) {
+      def setpointValue = payload."@SETPOINT"
+      device.sendEvent(name: "heatingSetpoint", value: setpointValue, unit: "F")
+      device.sendEvent(name: "thermostatSetpoint", value: setpointValue, unit: "F")
+      parent.logDebug "[DEBUG] updated SETPOINT to ${setpointValue}"
+    }
+    if (device.getDataValue("enabledDisabled") == "true" && payload."@ACTIVE" != null) {
+      def mode = payload."@ACTIVE" == true ? "heat" : "off"
+      device.sendEvent(name: "thermostatMode", value: mode)
+    }
+    if (payload."@MODE" != null) {
+      if (!payload."@MODE".toString().isInteger()) {
+        device.sendEvent(name: "thermostatMode", value: parent.translateThermostatMode(payload."@MODE".status))
+        device.sendEvent(name: "waterHeaterMode", value: payload."@MODE".status)
+      }
+      else {
+        def mode = translateEnumToWaterHeaderMode(payload."@MODE")
+        device.sendEvent(name: "thermostatMode", value: parent.translateThermostatMode(mode))
+        device.sendEvent(name: "waterHeaterMode", value: mode)
+      }
+    }
+    if (payload."@RUNNING" != null) {
+      def newMode = payload."@RUNNING" == "Running" ? "heating" : "idle"
+      parent.logDebug "[DEBUG] updated running mode to ${newMode}"
+      device.sendEvent(name: "thermostatOperatingState", value: newMode)	  
+    }
+    if (payload."@CONNECTED" != null && payload."@CONNECTED" == true) {
+      def updateTime = new Date()
+      parent.logDebug "[DEBUG] updated connected to ${updateTime}"
+      device.updateDataValue("connected", updateTime.toString())
+    }
+    if (payload."@ALERTCOUNT" != null) {
+      parent.logDebug "[DEBUG] updated alertCount to ${payload.'@ALERTCOUNT'}"
+      device.updateDataValue("alertCount", payload."@ALERTCOUNT".toString())
+    }
+    if (payload."@SETWARNING" != null) {
+      parent.logDebug "[DEBUG] updated warning to ${payload.'@SETWARNING'}"
+      device.updateDataValue("warning", payload."@SETWARNING".toString())
+    }
+    if (payload."@SIGNAL" != null) {
+      parent.logDebug "[DEBUG] updated signal to ${payload.'@SIGNAL'}"
+      device.updateDataValue("signal", payload."@SIGNAL".toString())
+    }
+    if (payload."@IP_ADDRESS" != null) {
+      parent.logDebug "[DEBUG] updated ipAddress to ${payload.'@IP_ADDRESS'}"
+      device.updateDataValue("ipAddress", payload."@IP_ADDRESS".toString())
+    }
+    if (payload."@SSID" != null) {
+      parent.logDebug "[DEBUG] updated ssId to ${payload.'@SSID'}"
+      device.updateDataValue("ssId", payload."@SSID".toString())
+    }
+  }  catch(e) {
+    log.error "[ERROR] Parsing: ${e}"
+  } 
 }
 
 def getDeviceName() {
@@ -199,10 +232,10 @@ def setWaterHeaterMode(waterheatermode) {
 		publishWithRetry(["@ENABLED": onOff])
 	}
 	else if (device.getDataValue("tempOnly") != "true") {
-		publishWithRetry(["@MODE": translateWaterHeaterModeToEnum(thermostatmode)])
+		publishWithRetry(["@MODE": translateWaterHeaterModeToEnum(waterheatermode)])
 	}
 	else
-		log.error "setThermostatMode called but not supported"
+		log.error "setWaterHeaterMode called but not supported"
 }
 
 def translateWaterHeaterModeToEnum(waterheatermode) {
@@ -217,6 +250,8 @@ def translateWaterHeaterModeToEnum(waterheatermode) {
             return 3
 		case "Normal":
             return 4
+		case "Vacation":
+			return 5
 	}
 }
 
@@ -232,6 +267,8 @@ def translateEnumToWaterHeaderMode(enumVal) {
 			return "HIGH DEMAND"
 		case 4:
 			return "ELECTRIC"
+		case 5:
+			return "VACATION"
 	}
 }
 
@@ -247,7 +284,6 @@ def translateThermostatModeToEnum(waterheatermode) {
 			return 4
 		case "emergency heat":
             return 3
-
 	}
 }
 
