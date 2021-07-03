@@ -93,10 +93,12 @@ def publishWithRetry(msg) {
 
 def mqttClientStatus(String message) {
 	if (message == "Status: Connection succeeded") {
-		parent.logDebug "Connected to MQTT"
+    // Debug
+    //processPayload("{\"@RUNNING\":\"\", \"@CONNECTED\":true, \"@SETPOINT\":{\"value\":115, \"constraints\":{\"lowerLimit\":91, \"unit\":1, \"upperLimit\":136}}, \"@SIGNAL\":-51, \"@IP_ADDRESS\":\"192.168.2.193\", \"@SETWARNING\":\"The temperature control located on the water heater is set to a maximum temperature of 136\", \"@SSID\":\"BOTEROS-IOT\", \"@AWAY_MSG\":\"\", \"@AWAY\":false, \"@ACTIVE\":true, \"transactionId\":\"WIFI_1.0_2021-04-24T13:55:57.600Z\", \"device_name\":\"48891546220008153\", \"serial_number\":\"40-E2-30-31-32-16-1088\"}")
+		log.debug "Connected to MQTT"
 	}
 	else if (message.contains("Connection lost") || message.contains("Client is not connected") || message.startsWith("Error:")) {
-		parent.logDebug "Lost MQTT connection, reconnecting."
+		log.debug "Lost MQTT connection, reconnecting."
 		try {
             interfaces.mqtt.disconnect() // Guarantee we're disconnected
         }
@@ -109,21 +111,34 @@ def mqttClientStatus(String message) {
 }
 
 def parse(String message) {
+  def topic = interfaces.mqtt.parseMessage(message)
+  processPayload(topic.payload)    
+}
+  
+def processPayload(topicPayload) {
   try {
-    def topic = interfaces.mqtt.parseMessage(message)
-    def payload =  new JsonSlurper().parseText(topic.payload) 
-    parent.logDebug "MQTT Message was: ${payload}"
+    def payload = new JsonSlurper().parseText(topicPayload) 
+    log.debug "MQTT Message was: ${payload}"
     if ("rheem:" + payload?.device_name + ":" + payload?.serial_number != device.deviceNetworkId) {
-      parent.logDebug "[ERROR] Wrong device"
+      log.debug "[ERROR] Wrong device"
       return
     }
+    if (payload."@RUNNING" != null) {
+      log.debug "Processing: @RUNNING"
+      def newMode = payload."@RUNNING" == "Running" ? "heating" : "idle"
+      log.debug "Updated running mode to ${newMode}"
+      device.sendEvent(name: "thermostatOperatingState", value: newMode)	  
+    }
     if (payload."@SETPOINT" != null) {
+      log.debug "Processing: @SETPOINT"
       def setpointValue = payload."@SETPOINT"
       device.sendEvent(name: "heatingSetpoint", value: setpointValue, unit: "F")
       device.sendEvent(name: "thermostatSetpoint", value: setpointValue, unit: "F")
-      parent.logDebug "[DEBUG] updated SETPOINT to ${setpointValue}"
+      //parent.logDebug "Updated SETPOINT to ${setpointValue}"
+      log.debug "updated SETPOINT to ${setpointValue}"
     }
     if (device.getDataValue("enabledDisabled") == "true" && payload."@ACTIVE" != null) {
+      log.debug "Processing: enabledDisabled"
       def mode = payload."@ACTIVE" == true ? "heat" : "off"
       device.sendEvent(name: "thermostatMode", value: mode)
     }
@@ -138,38 +153,33 @@ def parse(String message) {
         device.sendEvent(name: "waterHeaterMode", value: mode)
       }
     }
-    if (payload."@RUNNING" != null) {
-      def newMode = payload."@RUNNING" == "Running" ? "heating" : "idle"
-      parent.logDebug "[DEBUG] updated running mode to ${newMode}"
-      device.sendEvent(name: "thermostatOperatingState", value: newMode)	  
-    }
     if (payload."@CONNECTED" != null && payload."@CONNECTED" == true) {
       def updateTime = new Date()
-      parent.logDebug "[DEBUG] updated connected to ${updateTime}"
+      log.debug "Updated connected to ${updateTime}"
       device.updateDataValue("connected", updateTime.toString())
     }
     if (payload."@ALERTCOUNT" != null) {
-      parent.logDebug "[DEBUG] updated alertCount to ${payload.'@ALERTCOUNT'}"
+      log.debug "Updated alertCount to ${payload.'@ALERTCOUNT'}"
       device.updateDataValue("alertCount", payload."@ALERTCOUNT".toString())
     }
     if (payload."@SETWARNING" != null) {
-      parent.logDebug "[DEBUG] updated warning to ${payload.'@SETWARNING'}"
+      log.debug "Updated warning to ${payload.'@SETWARNING'}"
       device.updateDataValue("warning", payload."@SETWARNING".toString())
     }
     if (payload."@SIGNAL" != null) {
-      parent.logDebug "[DEBUG] updated signal to ${payload.'@SIGNAL'}"
+      log.debug "Updated signal to ${payload.'@SIGNAL'}"
       device.updateDataValue("signal", payload."@SIGNAL".toString())
     }
     if (payload."@IP_ADDRESS" != null) {
-      parent.logDebug "[DEBUG] updated ipAddress to ${payload.'@IP_ADDRESS'}"
+      log.debug "Updated ipAddress to ${payload.'@IP_ADDRESS'}"
       device.updateDataValue("ipAddress", payload."@IP_ADDRESS".toString())
     }
     if (payload."@SSID" != null) {
-      parent.logDebug "[DEBUG] updated ssId to ${payload.'@SSID'}"
+      log.debug "Updated ssId to ${payload.'@SSID'}"
       device.updateDataValue("ssId", payload."@SSID".toString())
     }
   }  catch(e) {
-    log.error "[ERROR] Parsing: ${e}"
+    log.error "ERROR Parsing: ${e}"
   } 
 }
 
